@@ -1,18 +1,71 @@
-# Fit dose-response curves per screen, combine into viability_raw.csv.
+# =============================================================================
+# NXP900 viability: raw plate data -> dose-response metrics -> viability.csv
+# =============================================================================
+#
+# Driver script for the whole viability pipeline. Run it top-to-bottom with
+# `Rscript drm.R` (or source it interactively) from the repo root. All the real
+# work lives in R/ and is loaded by devtools::load_all(".").
+#
+# ---- Pipeline -------------------------------------------------------------
+#
+#   1. PREPROCESSING   process_<screen>()  R/preprocessing.R
+#        Reads each vendor's raw plate export, runs the screen's QC, maps cell
+#        line names to DepMapID via Model.csv, and computes the response
+#        transforms (R/response_transforms.R). Writes, into <OUT_PATH>/<screen>/:
+#          drc_ready.csv   long per-dose data, one row per cell line x conc
+#          qc_*.csv        per-plate QC tables (only for screens with controls)
+#        Every drc_ready.csv is validated by check_drm_ready() before being
+#        written, so a schema violation fails here rather than during fitting.
+#
+#   2. DOSE-RESPONSE   process_screen()    R/drm.R
+#        Fits a 3-parameter log-logistic curve (drc::LL.3u, upper fixed at 100)
+#        per cell line per response, then derives IC50/GI50/GR50, AOC, DSS1-3,
+#        RMSE, AIC and flat/increasing flags. Writes, into <OUT_PATH>/<screen>/:
+#          <RESPONSE>_models.qs2   serialised fits (reloaded when refit = FALSE)
+#          drc_metrics.csv         long: DepMapID, dataset, halfmax, type, value
+#          <RESPONSE>_drc.png      diagnostic curve grid (only when plot_drc)
+#
+#   3. COMBINE         combine_drcfits()   R/drm.R
+#        Row-binds the per-screen drc_metrics.csv into <OUT_PATH>/viability_raw.csv
+#        and errors on any duplicated (DepMapID, dataset, halfmax, type) key.
+#
+#   4. POSTPROCESSING  postprocess_viability()  R/postprocessing.R
+#        Filters to the metrics of interest, censors bad fits to the top dose,
+#        and writes the analysis-ready <OUT_PATH>/viability.csv.
+#
+# ---- Screens --------------------------------------------------------------
 #
 # Each entry of SCREENS describes one screen and how to fit it:
-#   path         - directory holding raw_processing output and where DRC artefacts land.
-#                  Expects a drc_ready.csv in there (written by raw_processing/<screen>.R);
-#                  writes <RESPONSE>_models.qs2 and drc_metrics.csv into the same dir.
-#   responses    - subset of c("IC50","GI50","GR50") to fit (depends on what the screen supports)
-#   top_dose, bottom_dose - dose range (uM) used for AOC / DSS integration
-#   combine_name - column-prefix used by combine_drcfits; screens sharing one are row-bound
-#   grouped      - TRUE for screens with multiple dose ranges (handled per group)
+#   path         - directory holding the step-1 output and where the DRC
+#                  artefacts land. Must already contain drc_ready.csv.
+#   responses    - subset of c("IC50", "GI50", "GR50") to fit. A response is
+#                  only available if drc_ready.csv has the matching
+#                  TRT_INTENSITY_<RESPONSE> column, which depends on whether
+#                  the screen supplied day-0 counts (GI50/GR50 need them).
+#   top_dose,    - dose range (uM) used as the integration limits for AOC and
+#   bottom_dose    DSS. Ignored when grouped = TRUE.
+#   combine_name - dataset label written into drc_metrics.csv. Screens sharing
+#                  a label (oncolines + oncolines_v2 -> "ONCO") are row-bound
+#                  into one dataset, so their cell lines must not overlap.
+#   grouped      - TRUE when cell lines within the screen were dosed over
+#                  different ranges. Fitting is still one curve per cell line,
+#                  but AOC/DSS integration limits are taken per dose-range
+#                  group from the data instead of from top_dose/bottom_dose.
 #
-# See preprocessing/viability/README.md for the output naming conventions.
+# ---- Toggles --------------------------------------------------------------
 #
-# Toggles below are character vectors of screen keys. All default to nothing
-# because per-screen fits take hours — list a screen explicitly to do work.
+# RUN / REFIT / PLOT are character vectors of SCREENS keys, and REFIT and PLOT
+# must be subsets of RUN:
+#   RUN    assemble drc_metrics.csv for these screens
+#   REFIT  refit the curves from scratch; omitted screens reload their
+#          <RESPONSE>_models.qs2 instead. Fitting a large screen takes hours,
+#          so leave a screen out of REFIT once its models are on disk.
+#   PLOT   regenerate the diagnostic <RESPONSE>_drc.png grid (slow, 30x30in)
+#
+# A screen in RUN but not REFIT will fail if its .qs2 files do not exist yet.
+# COMBINE only reads drc_metrics.csv, so every screen in SCREENS must have been
+# run at least once before enabling it.
+# =============================================================================
 
 devtools::load_all(".")
 
@@ -22,19 +75,25 @@ DATA_PATH <- "data/"
 OUT_PATH <- "out/"
 
 # LOAD METADATA
-metadata <- dplyr::read_csv(file.path(DATA_PATH, "Model.csv"))
+# Model.csv is the DepMap model table; it supplies the CELL_LINE_NAME -> DepMapID
+# mapping used by every finalise step. Oncolines ships non-CCLE cell line names,
+# so it needs an extra translator table on top.
+metadata <- readr::read_csv(file.path(DATA_PATH, "Model.csv"))
 cell_line_name_translator <- read.csv("data/viability/oncolines/oncolines_cell_line_translator.csv", header = TRUE)
 
 # PREPROCESSING ----
+# out_path is a *directory* per screen — each process_* writes drc_ready.csv
+# into it, and these directories are the same ones SCREENS$<screen>$path points
+# at below. Comment out a screen once its drc_ready.csv is up to date.
 process_gdsc(
     main_csv   = file.path(DATA_PATH, "gdsc/drug_data/raw_data_GDSC_007_the.university.of.edinburgh.asier.unciti-broceta_21Feb19_2131.csv"),
     growth_csv = file.path(DATA_PATH, "gdsc/drug_data/day1_data_GDSC_007_21Feb19_2131.csv"),
-    out_path   = file.path(OUTPATH, "preprocessing", "gdsc.csv"),
+    out_path   = file.path(OUT_PATH, "gdsc"),
     info       = metadata
 )
 process_oncolines(
     xlsx_path    = file.path(DATA_PATH, "oncolines/v1/Raw data_21OL897.xlsx"),
-    out_path     = file.path(DATA_PATH, "preprocessing", "oncolines.csv"),
+    out_path     = file.path(OUT_PATH, "oncolines"),
     clt          = cell_line_name_translator,
     info         = metadata,
     dataset_name = "oncolines",
@@ -42,21 +101,21 @@ process_oncolines(
 )
 process_oncolines(
     xlsx_path    = file.path(DATA_PATH, "oncolines/v2/Raw data_21OL897.xlsx"),
-    out_path     = file.path(DATA_PATH, "preprocessing", "oncolines_v2.csv"),
+    out_path     = file.path(OUT_PATH, "oncolines_v2"),
     clt          = cell_line_name_translator,
     info         = metadata,
     dataset_name = "oncolines_v2",
     skip         = 4
 )
 process_temps(
-    main_csv = file.path(DATA_PATH, "temps/nxp900_viability.csv"),
-    out_path = file.path(OUTPATH, "preprocessing", "temps.csv"),
-    info = metadata
+    csv_path = file.path(DATA_PATH, "temps/nxp900_viability.csv"),
+    out_path = file.path(OUT_PATH, "temps"),
+    info     = metadata
 )
 process_brognard(
-    main_csv = file.path(DATA_PATH, "brognard/nxp900_viability.csv"),
-    out_path = file.path(OUTPATH, "preprocessing", "brognard.csv"),
-    info = metadata
+    csv_path = file.path(DATA_PATH, "brognard/nxp900_viability.csv"),
+    out_path = file.path(OUT_PATH, "brognard"),
+    info     = metadata
 )
 
 # DOSE-RESPONSE MODELLING ----
@@ -82,11 +141,11 @@ SCREENS <- list(
         top_dose     = 31.6,
         bottom_dose  = 0.00316
     ),
-    carolin = list(
-        path         = file.path(OUT_PATH, "carolin"),
-        combine_name = "CAROLIN",
+    temps = list(
+        path         = file.path(OUT_PATH, "temps"),
+        combine_name = "TEMPS",
         responses    = "GI50",
-        # carolin has two dose ranges (top/bottom dose vary by cell line) —
+        # temps has two dose ranges (top/bottom dose vary by cell line) —
         # one fit per cell line, AOC / DSS computed per-group from data
         grouped      = TRUE
     ),
@@ -100,10 +159,10 @@ SCREENS <- list(
 )
 
 # To do work, list screen keys here. REFIT/PLOT must be subsets of RUN.
-RUN <- c("gdsc", "oncolines", "oncolines_v2", "carolin", "brognard") # e.g. c("gdsc", "oncolines") — assemble + write drc_metrics.csv
-REFIT <- c("gdsc", "oncolines", "oncolines_v2", "carolin", "brognard") # subset of RUN — refit DRCs from scratch (else load existing rds)
-PLOT <- c("gdsc", "oncolines", "oncolines_v2", "carolin", "brognard") # subset of RUN — regenerate diagnostic DRC plot grid
-COMBINE <- TRUE # rebuild outputs/preprocessing/viability/viability_raw.csv
+RUN <- c("gdsc", "oncolines", "oncolines_v2", "temps", "brognard")
+REFIT <- c("gdsc", "oncolines", "oncolines_v2", "temps", "brognard")
+PLOT <- c("gdsc", "oncolines", "oncolines_v2", "temps", "brognard")
+COMBINE <- TRUE # rebuild out/viability_raw.csv from every screen in RUN
 
 stopifnot(all(RUN %in% names(SCREENS)))
 stopifnot(all(REFIT %in% RUN))
@@ -119,13 +178,13 @@ for (screen in RUN) {
 
 if (COMBINE) {
     combine_drcfits(
-        screens  = SCREENS,
-        out_path = file.path(OUT_BASE, "viability_raw.csv")
+        screens  = SCREENS[RUN],
+        out_path = file.path(OUT_PATH, "viability_raw.csv")
     )
 }
 
 # POSTPROCESSING ----
 postprocess_viability(
-    in_path  = file.path(OUT_BASE, "viability_raw.csv"),
-    out_path = file.path(OUT_BASE, "viability.csv")
+    in_path  = file.path(OUT_PATH, "viability_raw.csv"),
+    out_path = file.path(OUT_PATH, "viability.csv")
 )

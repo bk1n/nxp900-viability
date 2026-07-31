@@ -17,7 +17,7 @@
 # Per-dataset top dose (uM) for capping extrapolated absolute50. Must stay in
 # sync with the corresponding `top_dose` entries in drm.R::SCREENS. Only
 # datasets listed here have their good-fit absolute50 capped; others pass
-# through unchanged (e.g. CAROLIN, whose top dose is per-group, not a single
+# through unchanged (e.g. TEMPS, whose top dose is per-group, not a single
 # screen-wide value).
 VIABILITY_TOP_DOSE <- c(GDSC = 10^1, ONCO = 10^1.5, BROGNARD = 10^1.5)
 
