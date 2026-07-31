@@ -1,0 +1,22 @@
+Package: nxp900viability
+Title: Analyse NXP900 viability data w/ dose-response concentration modelling pipeline.
+Version: 1.0
+Authors@R:
+    person("Ben", "King", role = c("aut", "cre"))
+Description:
+License:
+Encoding: UTF-8
+Imports:
+    data.table,
+    devtools,
+    dplyr,
+    drc,
+    qs2,
+    readr,
+    readxl,
+    tibble,
+    tidyr,
+    tidyselect,
+    tidyverse
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 8.0.0
