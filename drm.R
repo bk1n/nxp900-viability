@@ -43,7 +43,11 @@
 #                  TRT_INTENSITY_<RESPONSE> column, which depends on whether
 #                  the screen supplied day-0 counts (GI50/GR50 need them).
 #   top_dose,    - dose range (uM) used as the integration limits for AOC and
-#   bottom_dose    DSS. Ignored when grouped = TRUE.
+#   bottom_dose    DSS. Ignored when grouped = TRUE. Keep these matched to the
+#                  screen's actual measured dose range, otherwise AOC/DSS
+#                  integrate extrapolated curve outside the data. Datasets also
+#                  listed in postprocessing.R::VIABILITY_TOP_DOSE must agree
+#                  with their top_dose here.
 #   combine_name - dataset label written into drc_metrics.csv. Screens sharing
 #                  a label (oncolines + oncolines_v2 -> "ONCO") are row-bound
 #                  into one dataset, so their cell lines must not overlap.
@@ -63,23 +67,24 @@
 #   PLOT   regenerate the diagnostic <RESPONSE>_drc.png grid (slow, 30x30in)
 #
 # A screen in RUN but not REFIT will fail if its .qs2 files do not exist yet.
-# COMBINE only reads drc_metrics.csv, so every screen in SCREENS must have been
-# run at least once before enabling it.
+# Step 3 only reads drc_metrics.csv, so every screen in RUN must have been run at
+# least once before it can be combined.
 # =============================================================================
 
 devtools::load_all(".")
 
-library(parallel)
-
-DATA_PATH <- "data/"
-OUT_PATH <- "out/"
+DATA_PATH <- "data"
+OUT_PATH <- "out"
 
 # LOAD METADATA
 # Model.csv is the DepMap model table; it supplies the CELL_LINE_NAME -> DepMapID
 # mapping used by every finalise step. Oncolines ships non-CCLE cell line names,
 # so it needs an extra translator table on top.
-metadata <- readr::read_csv(file.path(DATA_PATH, "Model.csv"))
-cell_line_name_translator <- read.csv("data/viability/oncolines/oncolines_cell_line_translator.csv", header = TRUE)
+# DepMap names the id column ModelID; the pipeline refers to it as DepMapID
+# throughout, so rename it once here rather than at every join.
+metadata <- readr::read_csv(file.path(DATA_PATH, "Model.csv")) %>%
+    dplyr::rename(DepMapID = ModelID)
+cell_line_name_translator <- read.csv(file.path(DATA_PATH, "oncolines/oncolines_cell_line_translator.csv"), header = TRUE)
 
 # PREPROCESSING ----
 # out_path is a *directory* per screen — each process_* writes drc_ready.csv
@@ -99,13 +104,16 @@ process_oncolines(
     dataset_name = "oncolines",
     skip         = 4
 )
+# skip = 0, not 4: oncolines_raw_v2.xlsx has already been trimmed to the header
+# row, whereas Raw data_21OL897.xlsx still carries four rows of preamble above it.
+# The column layout is identical between the two, so the same reader handles both.
 process_oncolines(
-    xlsx_path    = file.path(DATA_PATH, "oncolines/v2/Raw data_21OL897.xlsx"),
+    xlsx_path    = file.path(DATA_PATH, "oncolines/v1/oncolines_raw_v2.xlsx"),
     out_path     = file.path(OUT_PATH, "oncolines_v2"),
     clt          = cell_line_name_translator,
     info         = metadata,
     dataset_name = "oncolines_v2",
-    skip         = 4
+    skip         = 0
 )
 process_temps(
     csv_path = file.path(DATA_PATH, "temps/nxp900_viability.csv"),
@@ -153,8 +161,8 @@ SCREENS <- list(
         path         = file.path(OUT_PATH, "brognard"),
         combine_name = "BROGNARD",
         responses    = "IC50",
-        top_dose     = 31.6,
-        bottom_dose  = 0.00316
+        top_dose     = 10,
+        bottom_dose  = 0.0251
     )
 )
 
@@ -162,7 +170,6 @@ SCREENS <- list(
 RUN <- c("gdsc", "oncolines", "oncolines_v2", "temps", "brognard")
 REFIT <- c("gdsc", "oncolines", "oncolines_v2", "temps", "brognard")
 PLOT <- c("gdsc", "oncolines", "oncolines_v2", "temps", "brognard")
-COMBINE <- TRUE # rebuild out/viability_raw.csv from every screen in RUN
 
 stopifnot(all(RUN %in% names(SCREENS)))
 stopifnot(all(REFIT %in% RUN))
@@ -176,12 +183,10 @@ for (screen in RUN) {
     )
 }
 
-if (COMBINE) {
-    combine_drcfits(
-        screens  = SCREENS[RUN],
-        out_path = file.path(OUT_PATH, "viability_raw.csv")
-    )
-}
+combine_drcfits(
+    screens  = SCREENS[RUN],
+    out_path = file.path(OUT_PATH, "viability_raw.csv")
+)
 
 # POSTPROCESSING ----
 postprocess_viability(

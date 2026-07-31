@@ -1,3 +1,25 @@
+# Constants ----
+## Oncolines ----
+# Dose well code -> log10(concentration in M). Converted to uM downstream.
+ONCOLINES_DOSES <- c(
+    "d1" = -4.5, "d2" = -5.0, "d3" = -5.5, "d4" = -6.0, "d5" = -6.5,
+    "d6" = -7.0, "d7" = -7.5, "d8" = -8.0, "d9" = -8.5
+)
+
+# Oncolines-style cell line names whose translated form will not match CCLE 24Q2.
+# Accepted as missing — anything else that drops out is a regression.
+ONCOLINES_KNOWN_EXCL <- c(
+    "FAC", "Jurkat E6.1", "KPPC", "LS 174T", "MM.1R", "SB1", "UWB1.289+BRCA1", "MSK921", "HCC1588"
+)
+
+## GDSC ----
+# The single GDSC drug we keep (eCF506).
+GDSC_DRUG_ID <- 2437
+
+# Z-factor metrics computed on the MAIN plate (NC1 vs each high-signal well).
+# Drives the per-metric qc_zfactor_*.png filenames and the qc_metrics.csv columns.
+GDSC_ZFACTORS <- c(B = "Z_B", PC1 = "Z_PC1", PC2 = "Z_PC2")
+
 # Shared ----
 # Some screens arrive already summarised to per-dose responses, with no raw control wells.
 # Fill in the plate columns the fitting code expects so they match the per-well screens.
