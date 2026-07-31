@@ -16,17 +16,16 @@ library(drc)
         conc_min <- bottom_dose
         conc_max <- top_dose
 
-        nd <- data.frame(
-            CONC = 10^(seq(log10(conc_min), log10(conc_max), length.out = 1000))
-        )
-        f <- function(conc) {
-            nd <- data.frame(CONC = conc)
+        # integrate on the log10 dose axis: a linear integral is dominated by
+        # the top decade of the dose range and barely separates curves
+        f <- function(logconc) {
+            nd <- data.frame(CONC = 10^logconc)
             100 - predict(model, newdata = nd)
         }
         tryCatch(
             {
                 return(
-                    integrate(f, lower = conc_min, upper = conc_max)$value
+                    integrate(f, lower = log10(conc_min), upper = log10(conc_max))$value
                 )
             },
             error = function(e) {
@@ -52,14 +51,25 @@ library(drc)
 
     if (!normalisation_method %in% c("GI50", "GR50", "IC50")) {
         stop("normalisation_method must be one of GI50, GR50, or IC50")
+    } else if(normalisation_method == 'GI50') {
+        # DSS is undefined for GI50, as DSS requires scaling to fixed area and GI50 can go to -Inf
+        return(
+            data.frame(
+                "DSS1" = NA,
+                "DSS2" = NA,
+                "DSS3" = NA
+            )
+        )
     } else {
-        if (normalisation_method %in% c("GI50", "GR50")) {
+        if (normalisation_method == "GR50") {
             t. <- 100 - (200 * t)
-            me <- 100 - .extract_coefs(model)[, "c"]
+            # activity is 100 - response, so a -100 response is 200% activity
+            amax <- 200
         } else {
             t. <- 100 - (100 * t)
-            me <- 100 - .extract_coefs(model)[, "c"]
+            amax <- 100
         }
+        me <- 100 - .extract_coefs(model)[, "c"]
     }
 
     conc_min <- bottom_dose
@@ -84,15 +94,15 @@ library(drc)
         t_conc <- nd$CONC[min(which(preds <= t.))]
     }
 
-    # integrate from bottom_dose to top_dose
-    f <- function(conc) {
-        nd <- data.frame(CONC = conc)
+    # integrate from t_conc to top_dose, on the log10 dose axis (Yadav, 2014)
+    f <- function(logconc) {
+        nd <- data.frame(CONC = 10^logconc)
         100 - predict(model, newdata = nd)
     }
 
     aoc_total <- tryCatch(
         {
-            integrate(f, lower = t_conc, upper = conc_max)$value
+            integrate(f, lower = log10(t_conc), upper = log10(conc_max))$value
         },
         error = function(e) {
             print("Error in integrate, returning NA")
@@ -103,17 +113,26 @@ library(drc)
     if (is.na(aoc_total)) {
         dss1 <- dss2 <- dss3 <- NA
     } else {
-        aoc_below_t <- aoc_total - (100 - t.) * (conc_max - t_conc)
-        max_area <- (100 - t.) * (conc_max - conc_min)
+        # all areas on the log10 dose axis, to match aoc_total
+        lconc_min <- log10(conc_min)
+        lconc_max <- log10(conc_max)
+        lt_conc <- log10(t_conc)
+
+        aoc_below_t <- aoc_total - (amax * t) * (lconc_max - lt_conc)
+        # amplitude is (max activity - threshold activity), not the threshold
+        max_area <- (amax - (amax * t)) * (lconc_max - lconc_min)
 
         # DSS1
         dss1 <- aoc_below_t / max_area
 
         # DSS2
-        dss2 <- dss1 / log10(me)
+        # scale me between zero and 1 for GR50
+        # DSS2 cannot be defined for ME of 0 or flat curves (these will be set to zero anyway)
+        dss2_scaler = me / amax
+        dss2 <- if (is.na(dss2_scaler) || dss2_scaler == 0 || dss2_scaler >= 1) NA else dss1 / -log10(dss2_scaler)
 
         # DSS3
-        dss3 <- dss2 * (conc_max - t_conc) / (conc_max - conc_min)
+        dss3 <- dss2 * (lconc_max - lt_conc) / (lconc_max - lconc_min)
     }
 
     data.frame(
@@ -168,6 +187,9 @@ library(drc)
 
 # given data.frame, checks if curves are increasing
 .increasing <- function(model) {
+    if (is.null(model)) {
+        return(NA)
+    }
     if (sign(coef(model)[1]) < 0) TRUE else FALSE
 }
 
@@ -179,12 +201,12 @@ library(drc)
         # mutate(across(c(matches("10|50|90")), function(x) if_else(x < bottom_dose, bottom_dose, x))) %>%
         # increasing curves
         mutate(across(c(matches("10|50|90")), function(x) if_else(incr, top_dose, x))) %>%
-        mutate(across(c(matches("_aoc$|_aoct$")), function(x) if_else(incr, 0, x))) %>%
-        mutate(across(c(matches("_c$")), function(x) if_else(incr, 100, x))) %>%
+        mutate(across(c(matches("^aoc$|^aoct$")), function(x) if_else(incr, 0, x))) %>%
+        mutate(across(c(matches("^c$")), function(x) if_else(incr, 100, x))) %>%
         # flat curves
         mutate(across(c(matches("10|50|90")), function(x) if_else(isflat, top_dose, x))) %>%
-        mutate(across(c(matches("_aoc$|_aoct$")), function(x) if_else(isflat, 0, x))) %>%
-        mutate(across(c(matches("_c$")), function(x) if_else(isflat, 100, x)))
+        mutate(across(c(matches("^aoc$|^aoct$")), function(x) if_else(isflat, 0, x))) %>%
+        mutate(across(c(matches("^c$")), function(x) if_else(isflat, 100, x)))
 }
 
 # data should have at least three columns: CELL_LINE_NAME, TRT_INTENSITY and CONC
@@ -205,15 +227,31 @@ drm_fit <- function(data, lwr_limit = -Inf) {
     # drmc
     control <- drmc(maxIt = 1000, relTol = 1e-6, noMessage = TRUE, errorm = FALSE, rmNA = TRUE)
     # fit LL4
-    model <- drc::drm(
-        TRT_INTENSITY ~ CONC,
-        data = data,
-        fct = drc::LL.3u(upper = 100),
-        start = c(2, 50, median(data$CONC, na.rm = T)),
-        lowerl = c(-Inf, lwr_limit, lower_e),
-        upperl = c(Inf, upper_d, upper_e),
-        control = control
+    model <- tryCatch(
+        drc::drm(
+            TRT_INTENSITY ~ CONC,
+            data = data,
+            fct = drc::LL.3u(upper = 100),
+            start = c(2, 50, median(data$CONC, na.rm = T)),
+            lowerl = c(-Inf, lwr_limit, lower_e),
+            upperl = c(Inf, upper_d, upper_e),
+            control = control
+        ),
+        error = function(e) {
+            cat(sprintf("Fit failed: %s\n", conditionMessage(e)))
+            NULL
+        }
     )
+
+    # with errorm = FALSE drc returns a bare list (convergence = FALSE) instead
+    # of a "drc" object on failure; normalise it so the is.null() guards fire
+    if (!inherits(model, "drc")) {
+        return(list(
+            data = data,
+            model = NULL,
+            flat = flat
+        ))
+    }
 
     # F-test for the significance of the sigmoidal fit (Hafner, 2016)
     Npara <- 3 # 4PL w/ d fixed
@@ -452,7 +490,7 @@ process_screen <- function(cfg, refit = FALSE, plot_drc = FALSE) {
     cat(basename(cfg$path), "DONE ->", out_csv, "\n")
 }
 
-# Grouped variant: screens (Carolin) where different cell lines were dosed at
+# Grouped variant: screens (temps) where different cell lines were dosed at
 # different ranges. One shared fit per cell line, but AOC / DSS post-processing
 # uses each group's (min, max) CONC.
 .process_screen_grouped <- function(cfg, screen_data, refit, plot_drc) {
