@@ -51,8 +51,17 @@ library(drc)
 
     if (!normalisation_method %in% c("GI50", "GR50", "IC50")) {
         stop("normalisation_method must be one of GI50, GR50, or IC50")
+    } else if(normalisation_method == 'GI50') {
+        # DSS is undefined for GI50, as DSS requires scaling to fixed area and GI50 can go to -Inf
+        return(
+            data.frame(
+                "DSS1" = NA,
+                "DSS2" = NA,
+                "DSS3" = NA
+            )
+        )
     } else {
-        if (normalisation_method %in% c("GI50", "GR50")) {
+        if (normalisation_method == "GR50") {
             t. <- 100 - (200 * t)
             # activity is 100 - response, so a -100 response is 200% activity
             amax <- 200
@@ -109,16 +118,18 @@ library(drc)
         lconc_max <- log10(conc_max)
         lt_conc <- log10(t_conc)
 
-        aoc_below_t <- aoc_total - (100 - t.) * (lconc_max - lt_conc)
+        aoc_below_t <- aoc_total - (amax * t) * (lconc_max - lt_conc)
         # amplitude is (max activity - threshold activity), not the threshold
-        max_area <- (amax - (100 - t.)) * (lconc_max - lconc_min)
+        max_area <- (amax - (amax * t)) * (lconc_max - lconc_min)
 
         # DSS1
         dss1 <- aoc_below_t / max_area
 
         # DSS2
-        # log10(me) is 0 at me = 1 and undefined below it, so guard
-        dss2 <- if (is.na(me) || me <= 1) NA else dss1 / log10(me)
+        # scale me between zero and 1 for GR50
+        # DSS2 cannot be defined for ME of 0 or flat curves (these will be set to zero anyway)
+        dss2_scaler = me / amax
+        dss2 <- if (is.na(dss2_scaler) || dss2_scaler == 0 || dss2_scaler >= 1) NA else dss1 / -log10(dss2_scaler)
 
         # DSS3
         dss3 <- dss2 * (lconc_max - lt_conc) / (lconc_max - lconc_min)
