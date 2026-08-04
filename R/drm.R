@@ -1,6 +1,8 @@
 library(tidyverse)
 library(drc)
 
+pbapply::pboptions(type = "timer")
+
 .rmse <- function(model) {
     if (!is.null(model)) {
         sqrt(mean(residuals(model)^2))
@@ -51,7 +53,7 @@ library(drc)
 
     if (!normalisation_method %in% c("GI50", "GR50", "IC50")) {
         stop("normalisation_method must be one of GI50, GR50, or IC50")
-    } else if(normalisation_method == 'GI50') {
+    } else if (normalisation_method == "GI50") {
         # DSS is undefined for GI50, as DSS requires scaling to fixed area and GI50 can go to -Inf
         return(
             data.frame(
@@ -128,7 +130,7 @@ library(drc)
         # DSS2
         # scale me between zero and 1 for GR50
         # DSS2 cannot be defined for ME of 0 or flat curves (these will be set to zero anyway)
-        dss2_scaler = me / amax
+        dss2_scaler <- me / amax
         dss2 <- if (is.na(dss2_scaler) || dss2_scaler == 0 || dss2_scaler >= 1) NA else dss1 / -log10(dss2_scaler)
 
         # DSS3
@@ -217,7 +219,7 @@ drm_fit <- function(data, lwr_limit = -Inf) {
 
     # checks
     stopifnot(all(c("CELL_LINE_NAME", "TRT_INTENSITY", "CONC") %in% colnames(data)))
-    cat(sprintf("Fitting models for %s\n", unique(data$CELL_LINE_NAME)))
+    # cat(sprintf("Fitting models for %s\n", unique(data$CELL_LINE_NAME)))
 
     lower_e <- min(data$CONC)
     upper_e <- max(data$CONC) * 10^2
@@ -406,7 +408,7 @@ plot_drm <- function(drm_df, models, name, outpath) {
     d <- screen_data %>%
         dplyr::select(CELL_LINE_NAME, TRT_INTENSITY = dplyr::all_of(trt_col), CONC)
     d <- split(d, d$CELL_LINE_NAME)
-    lapply(d, drm_fit, lwr_limit = .default_lwr_limit(response))
+    pbapply::pblapply(d, drm_fit, lwr_limit = .default_lwr_limit(response))
 }
 
 # Inner-join per-response drm dataframes on DepMapID; CELL_LINE_NAME kept once.

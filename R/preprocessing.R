@@ -233,7 +233,7 @@ process_gdsc <- function(main_csv, growth_csv, out_path, info,
 # Oncolines ----
 # Read the raw Oncolines xlsx and return long-format per-well plate data.
 oncolines_read <- function(xlsx_path, skip = 0) {
-    d <- readxl::read_xlsx(xlsx_path, skip = skip)
+    d <- suppressMessages(readxl::read_xlsx(xlsx_path, skip = skip))
 
     names <- d$`Cell line name`
     names <- names[-1]
