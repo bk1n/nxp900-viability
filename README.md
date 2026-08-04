@@ -1,8 +1,9 @@
 # nxp900-viability
 
 Processing of NXP900 viability data from GDSC, Oncolines, Temps, and Brognard.
+Runs QC, visualisation, normalisation, and dose-response curve fitting and saves response metrics/parameters to `out/viability.csv` for downstream analysis.
 
-Produces fully processed viability dataset in `out/viability.csv` for downstream analysis.
+Install packages, pull data, then run: `Rscript drm.R`
 
 ## Packages
 
